@@ -345,3 +345,125 @@
         )
     )
 )
+
+;; Liquidity Withdrawal - Burn LP Tokens for Underlying Assets
+
+;; Remove liquidity from pools and reclaim underlying tokens
+;; Burns LP tokens proportionally to extract underlying assets
+(define-public (remove-liquidity
+    (token-a <sip-010-trait>)   ;; First token in the pair
+    (token-b <sip-010-trait>)   ;; Second token in the pair
+    (liquidity uint)            ;; Amount of LP tokens to burn
+    (amount-a-min uint)         ;; Minimum token A to receive (slippage protection)
+    (amount-b-min uint)         ;; Minimum token B to receive (slippage protection)
+)
+    (let (
+        (pool-key (get-pool-key token-a token-b))
+        (pool-data (map-get? pools pool-key))
+    )
+        ;; Validate pool exists and parameters
+        (asserts! (not (is-none pool-data)) ERR-POOL-NOT-EXISTS)
+        (asserts! (> liquidity u0) ERR-ZERO-AMOUNT)
+        
+        (let (
+            (pool-info (unwrap-panic pool-data))
+            (current-reserve-a (get reserve-a pool-info))
+            (current-reserve-b (get reserve-b pool-info))
+            (current-total-supply (get total-supply pool-info))
+            (user-lp-balance (default-to u0 (map-get? balances tx-sender)))
+        )
+            ;; Verify user has sufficient LP tokens
+            (asserts! (<= liquidity user-lp-balance) ERR-INSUFFICIENT-BALANCE)
+            
+            ;; Calculate proportional withdrawal amounts
+            (let (
+                (withdrawal-amount-a (/ (* liquidity current-reserve-a) current-total-supply))
+                (withdrawal-amount-b (/ (* liquidity current-reserve-b) current-total-supply))
+            )
+                ;; Enforce slippage protection
+                (asserts! (and (>= withdrawal-amount-a amount-a-min) (>= withdrawal-amount-b amount-b-min)) ERR-SLIPPAGE)
+                
+                ;; Burn LP tokens from user balance
+                (map-set balances tx-sender (- user-lp-balance liquidity))
+                
+                ;; Update pool reserves and total supply
+                (map-set pools pool-key (tuple
+                    (reserve-a (- current-reserve-a withdrawal-amount-a))
+                    (reserve-b (- current-reserve-b withdrawal-amount-b))
+                    (total-supply (- current-total-supply liquidity))
+                ))
+                
+                ;; Transfer tokens back to liquidity provider
+                (try! (contract-call? token-a transfer withdrawal-amount-a (as-contract tx-sender) tx-sender none))
+                (try! (contract-call? token-b transfer withdrawal-amount-b (as-contract tx-sender) tx-sender none))
+                
+                ;; Log withdrawal event
+                (var-set liquidity-event (some (tuple
+                    (provider tx-sender)
+                    (token-a (contract-of token-a))
+                    (token-b (contract-of token-b))
+                    (amount-a withdrawal-amount-a)
+                    (amount-b withdrawal-amount-b)
+                    (lp-amount liquidity)
+                )))
+                
+                (ok (tuple 
+                    (amount-a withdrawal-amount-a) 
+                    (amount-b withdrawal-amount-b)
+                ))
+            )
+        )
+    )
+)
+
+;; Meta-Transaction Trading - Gasless Swap Execution
+
+;; Execute gasless token swaps using meta-transactions and relayers
+;; This is the core innovation enabling fee-free trading on BitFlow
+(define-public (swap-tokens-for-tokens
+    (token-in <sip-010-trait>)  ;; Token being sold
+    (token-out <sip-010-trait>) ;; Token being purchased
+    (amount-in uint)            ;; Amount of input token
+    (min-amount-out uint)       ;; Minimum output (slippage protection)
+    (nonce uint)                ;; Unique transaction nonce
+    (signature (buff 65))       ;; User's ECDSA signature
+    (public-key (buff 33))      ;; User's public key for verification
+)
+    (let (
+        (actual-user tx-sender)  ;; The relayer submitting this transaction
+        (pool-key (get-pool-key token-in token-out))
+        (pool-data (map-get? pools pool-key))
+    )
+        ;; Validate trading pair and pool existence
+        (asserts! (not (is-none pool-data)) ERR-POOL-NOT-EXISTS)
+        (asserts! (not (is-eq token-in token-out)) ERR-IDENTICAL-TOKENS)
+        (asserts! (> amount-in u0) ERR-ZERO-AMOUNT)
+        
+        ;; Implement nonce-based replay protection
+        (let ((previously-used-nonce (map-get? user-nonces actual-user)))
+            (asserts! (is-none previously-used-nonce) ERR-INVALID-NONCE)
+            (map-set user-nonces actual-user nonce)
+        )
+        
+        ;; Generate deterministic message hash for signature verification
+        (let (
+            (message-hash (sha256 (concat 
+                (concat (unwrap-panic (to-consensus-buff? nonce)) 
+                        (unwrap-panic (to-consensus-buff? amount-in)))
+                (unwrap-panic (to-consensus-buff? min-amount-out))
+            )))
+        )
+            ;; Verify user authorization through cryptographic signature
+            (asserts! (verify-signature message-hash signature public-key actual-user) ERR-INVALID-SIGNATURE)
+        )
+        
+        (let (
+            (pool-info (unwrap-panic pool-data))
+            (input-reserve (get reserve-a pool-info))
+            (output-reserve (get reserve-b pool-info))
+        )
+            ;; Calculate swap output using CPMM formula
+            (let ((calculated-output (calculate-output-amount input-reserve output-reserve amount-in)))
+                ;; Validate trade meets user requirements and pool capacity
+                (asserts! (>= calculated-output min-amount-out) ERR-SLIPPAGE)
+                (asserts! (and (< amount-in input-reserve) (< calculated-output output-reserve)) ERR-INSUFFICIENT-LIQUIDITY)

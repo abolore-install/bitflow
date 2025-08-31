@@ -236,3 +236,112 @@
                     (amount-b amount-b-desired)
                     (lp-amount initial-lp-supply)
                 )))
+
+                (ok (tuple 
+                    (amount-a amount-a-desired) 
+                    (amount-b amount-b-desired) 
+                    (liquidity initial-lp-supply)
+                ))
+            )
+            
+            ;; ============================================================
+            ;; Existing Pool - Proportional Liquidity Addition
+            ;; ============================================================
+            (let (
+                (pool-data (unwrap-panic existing-pool))
+                (current-reserve-a (get reserve-a pool-data))
+                (current-reserve-b (get reserve-b pool-data))
+                (current-total-supply (get total-supply pool-data))
+                ;; Calculate optimal token B amount based on current pool ratio
+                (optimal-amount-b (/ (* amount-a-desired current-reserve-b) current-reserve-a))
+            )
+                (if (<= optimal-amount-b amount-b-desired)
+                    ;; Use token A as base, adjust token B
+                    (let (
+                        (final-amount-a amount-a-desired)
+                        (final-amount-b optimal-amount-b)
+                    )
+                        ;; Validate slippage protection
+                        (asserts! (and (>= final-amount-a amount-a-min) (>= final-amount-b amount-b-min)) ERR-SLIPPAGE)
+                        
+                        ;; Execute token transfers
+                        (try! (contract-call? token-a transfer final-amount-a tx-sender (as-contract tx-sender) none))
+                        (try! (contract-call? token-b transfer final-amount-b tx-sender (as-contract tx-sender) none))
+                        
+                        ;; Calculate and mint proportional LP tokens
+                        (let (
+                            (new-liquidity (/ (* final-amount-a current-total-supply) current-reserve-a))
+                        )
+                            ;; Update pool state
+                            (map-set pools pool-key (tuple
+                                (reserve-a (+ current-reserve-a final-amount-a))
+                                (reserve-b (+ current-reserve-b final-amount-b))
+                                (total-supply (+ current-total-supply new-liquidity))
+                            ))
+                            ;; Update user LP balance
+                            (map-set balances tx-sender (+ (default-to u0 (map-get? balances tx-sender)) new-liquidity))
+                            
+                            ;; Emit event for tracking
+                            (var-set liquidity-event (some (tuple
+                                (provider tx-sender)
+                                (token-a (contract-of token-a))
+                                (token-b (contract-of token-b))
+                                (amount-a final-amount-a)
+                                (amount-b final-amount-b)
+                                (lp-amount new-liquidity)
+                            )))
+                            
+                            (ok (tuple 
+                                (amount-a final-amount-a) 
+                                (amount-b final-amount-b) 
+                                (liquidity new-liquidity)
+                            ))
+                        )
+                    )
+                    ;; Use token B as base, adjust token A
+                    (let (
+                        (final-amount-a (/ (* amount-b-desired current-reserve-a) current-reserve-b))
+                        (final-amount-b amount-b-desired)
+                    )
+                        ;; Validate slippage protection
+                        (asserts! (and (>= final-amount-a amount-a-min) (>= final-amount-b amount-b-min)) ERR-SLIPPAGE)
+                        
+                        ;; Execute token transfers
+                        (try! (contract-call? token-a transfer final-amount-a tx-sender (as-contract tx-sender) none))
+                        (try! (contract-call? token-b transfer final-amount-b tx-sender (as-contract tx-sender) none))
+                        
+                        ;; Calculate and mint proportional LP tokens
+                        (let (
+                            (new-liquidity (/ (* final-amount-b current-total-supply) current-reserve-b))
+                        )
+                            ;; Update pool state
+                            (map-set pools pool-key (tuple
+                                (reserve-a (+ current-reserve-a final-amount-a))
+                                (reserve-b (+ current-reserve-b final-amount-b))
+                                (total-supply (+ current-total-supply new-liquidity))
+                            ))
+                            ;; Update user LP balance
+                            (map-set balances tx-sender (+ (default-to u0 (map-get? balances tx-sender)) new-liquidity))
+                            
+                            ;; Emit event for tracking
+                            (var-set liquidity-event (some (tuple
+                                (provider tx-sender)
+                                (token-a (contract-of token-a))
+                                (token-b (contract-of token-b))
+                                (amount-a final-amount-a)
+                                (amount-b final-amount-b)
+                                (lp-amount new-liquidity)
+                            )))
+                            
+                            (ok (tuple 
+                                (amount-a final-amount-a) 
+                                (amount-b final-amount-b) 
+                                (liquidity new-liquidity)
+                            ))
+                        )
+                    )
+                )
+            )
+        )
+    )
+)

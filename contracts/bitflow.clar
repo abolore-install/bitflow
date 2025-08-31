@@ -578,3 +578,49 @@
         )
     )
 )
+
+;; Get liquidity provider's LP token balance
+;; Allows LPs to track their pool ownership percentage
+(define-read-only (get-balance
+    (user principal)
+)
+    (ok (default-to u0 (map-get? balances user)))
+)
+
+;; Calculate expected output for a given input amount
+;; Critical for frontend price discovery and trade simulation
+(define-read-only (get-amount-out
+    (token-in <sip-010-trait>)
+    (token-out <sip-010-trait>)
+    (amount-in uint)
+)
+    (let (
+        (pool-key (get-pool-key token-in token-out))
+        (pool-data (map-get? pools pool-key))
+    )
+        (if (is-none pool-data)
+            (err ERR-POOL-NOT-EXISTS)
+            (let (
+                (pool-info (unwrap-panic pool-data))
+                (input-reserve (get reserve-a pool-info))
+                (output-reserve (get reserve-b pool-info))
+            )
+                (ok (calculate-output-amount input-reserve output-reserve amount-in))
+            )
+        )
+    )
+)
+
+;; Verify if a nonce has been consumed for meta-transaction replay protection
+;; Essential for wallet applications implementing meta-transaction support
+(define-read-only (is-nonce-used
+    (user principal)
+    (nonce uint)
+)
+    (let ((recorded-nonce (map-get? user-nonces user)))
+        (if (is-none recorded-nonce)
+            (ok false)
+            (ok (is-eq (unwrap-panic recorded-nonce) nonce))
+        )
+    )
+)

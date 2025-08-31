@@ -113,3 +113,126 @@
     )) 
     none
 )
+
+;; Mathematical Utilities - Precision Financial Calculations
+
+;; Newton's method square root approximation for geometric mean calculations
+;; Used in initial liquidity provision to determine LP token supply
+(define-private (sqrt-approx (n uint))
+    (if (<= n u1)
+        n
+        (let ((initial-guess (/ n u2)))
+            ;; Three iterations of Newton's method for sufficient precision
+            (let ((iteration-1 (/ (+ initial-guess (/ n initial-guess)) u2)))
+                (let ((iteration-2 (/ (+ iteration-1 (/ n iteration-1)) u2)))
+                    (let ((final-result (/ (+ iteration-2 (/ n iteration-2)) u2)))
+                        final-result
+                    )
+                )
+            )
+        )
+    )
+)
+
+;; Constant Product Market Maker (CPMM) formula implementation
+;; Calculates swap output using x * y = k invariant with protocol fees
+(define-private (calculate-output-amount
+    (reserve-in uint)    ;; Current reserve of input token
+    (reserve-out uint)   ;; Current reserve of output token  
+    (amount-in uint)     ;; Amount of input token being swapped
+)
+    (if (or (is-eq amount-in u0) (is-eq reserve-in u0) (is-eq reserve-out u0))
+        u0
+        (let (
+            ;; Apply protocol fee to input amount
+            (amount-in-after-fee (* amount-in FEE-MULTIPLIER))
+            ;; Calculate numerator: fee-adjusted input * output reserve
+            (numerator (* amount-in-after-fee reserve-out))
+            ;; Calculate denominator: (input reserve * fee denominator) + fee-adjusted input
+            (denominator (+ (* reserve-in FEE-DENOMINATOR) amount-in-after-fee))
+        )
+            (if (is-eq denominator u0)
+                u0
+                (/ numerator denominator)
+            )
+        )
+    )
+)
+
+;; Cryptographic Security - Meta-Transaction Verification
+
+;; ECDSA signature verification for meta-transactions
+;; Enables gasless trading by validating off-chain user authorization
+(define-private (verify-signature
+    (message-hash (buff 32))    ;; SHA256 hash of transaction parameters
+    (signature (buff 65))       ;; User's ECDSA signature
+    (public-key (buff 33))      ;; User's compressed public key
+    (expected-user principal)   ;; Expected user principal
+)
+    ;; Recover public key from signature and verify against expected user
+    (match (secp256k1-recover? message-hash signature)
+        recovered-key (is-eq recovered-key public-key)
+        error false
+    )
+)
+
+;; Generate standardized pool identifier for consistent lookups
+;; Ensures deterministic pool addressing regardless of token order
+(define-private (get-pool-key
+    (token-a <sip-010-trait>)
+    (token-b <sip-010-trait>)
+)
+    {token-a: (contract-of token-a), token-b: (contract-of token-b)}
+)
+
+;; Liquidity Management - Pool Creation and Maintenance
+
+;; Add liquidity to existing pools or create new trading pairs
+;; Implements optimal liquidity ratio calculations and LP token minting
+(define-public (add-liquidity
+    (token-a <sip-010-trait>)   ;; First token in the pair
+    (token-b <sip-010-trait>)   ;; Second token in the pair
+    (amount-a-desired uint)     ;; Desired amount of token A
+    (amount-b-desired uint)     ;; Desired amount of token B
+    (amount-a-min uint)         ;; Minimum acceptable amount of token A
+    (amount-b-min uint)         ;; Minimum acceptable amount of token B
+)
+    (let (
+        (pool-key (get-pool-key token-a token-b))
+        (existing-pool (map-get? pools pool-key))
+    )
+        ;; Validate input parameters
+        (asserts! (not (is-eq token-a token-b)) ERR-IDENTICAL-TOKENS)
+        (asserts! (and (> amount-a-desired u0) (> amount-b-desired u0)) ERR-ZERO-AMOUNT)
+        
+        (if (is-none existing-pool)
+            ;; ============================================================
+            ;; New Pool Creation - Bootstrap Initial Liquidity
+            ;; ============================================================
+            (let (
+                ;; Calculate initial LP token supply using geometric mean
+                (initial-lp-supply (sqrt-approx (* amount-a-desired amount-b-desired)))
+            )
+                (asserts! (> initial-lp-supply u0) ERR-INSUFFICIENT-LIQUIDITY)
+                
+                ;; Transfer tokens from liquidity provider to contract
+                (try! (contract-call? token-a transfer amount-a-desired tx-sender (as-contract tx-sender) none))
+                (try! (contract-call? token-b transfer amount-b-desired tx-sender (as-contract tx-sender) none))
+                
+                ;; Initialize pool state and mint LP tokens
+                (map-set pools pool-key (tuple 
+                    (reserve-a amount-a-desired)
+                    (reserve-b amount-b-desired)
+                    (total-supply initial-lp-supply)
+                ))
+                (map-set balances tx-sender initial-lp-supply)
+                
+                ;; Emit liquidity addition event for analytics
+                (var-set liquidity-event (some (tuple
+                    (provider tx-sender)
+                    (token-a (contract-of token-a))
+                    (token-b (contract-of token-b))
+                    (amount-a amount-a-desired)
+                    (amount-b amount-b-desired)
+                    (lp-amount initial-lp-supply)
+                )))

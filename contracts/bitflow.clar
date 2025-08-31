@@ -467,3 +467,114 @@
                 ;; Validate trade meets user requirements and pool capacity
                 (asserts! (>= calculated-output min-amount-out) ERR-SLIPPAGE)
                 (asserts! (and (< amount-in input-reserve) (< calculated-output output-reserve)) ERR-INSUFFICIENT-LIQUIDITY)
+
+                ;; Execute atomic token transfers
+                (try! (contract-call? token-in transfer amount-in actual-user (as-contract tx-sender) none))
+                
+                ;; Update pool state maintaining constant product invariant
+                (map-set pools pool-key (tuple
+                    (reserve-a (+ input-reserve amount-in))
+                    (reserve-b (- output-reserve calculated-output))
+                    (total-supply (get total-supply pool-info))
+                ))
+                
+                ;; Transfer output tokens to user
+                (try! (contract-call? token-out transfer calculated-output (as-contract tx-sender) actual-user none))
+                
+                ;; Log swap event for analytics and monitoring
+                (var-set swap-event (some (tuple
+                    (user actual-user)
+                    (token-in (contract-of token-in))
+                    (token-out (contract-of token-out))
+                    (amount-in amount-in)
+                    (amount-out calculated-output)
+                )))
+                
+                (ok (tuple 
+                    (amount-in amount-in) 
+                    (amount-out calculated-output)
+                ))
+            )
+        )
+    )
+)
+
+;; Standard Trading - Traditional STX-based Swaps
+
+;; Execute token swaps for users who hold STX for transaction fees
+;; Provides fallback trading method and compatibility with existing wallets
+(define-public (swap
+    (token-in <sip-010-trait>)  ;; Token being sold
+    (token-out <sip-010-trait>) ;; Token being purchased
+    (amount-in uint)            ;; Amount of input token
+    (min-amount-out uint)       ;; Minimum output (slippage protection)
+)
+    (let (
+        (pool-key (get-pool-key token-in token-out))
+        (pool-data (map-get? pools pool-key))
+    )
+        ;; Validate trading parameters
+        (asserts! (not (is-none pool-data)) ERR-POOL-NOT-EXISTS)
+        (asserts! (not (is-eq token-in token-out)) ERR-IDENTICAL-TOKENS)
+        (asserts! (> amount-in u0) ERR-ZERO-AMOUNT)
+        
+        (let (
+            (pool-info (unwrap-panic pool-data))
+            (input-reserve (get reserve-a pool-info))
+            (output-reserve (get reserve-b pool-info))
+        )
+            ;; Calculate swap output using CPMM formula
+            (let ((calculated-output (calculate-output-amount input-reserve output-reserve amount-in)))
+                ;; Validate trade parameters
+                (asserts! (>= calculated-output min-amount-out) ERR-SLIPPAGE)
+                (asserts! (and (< amount-in input-reserve) (< calculated-output output-reserve)) ERR-INSUFFICIENT-LIQUIDITY)
+                
+                ;; Execute atomic swap
+                (try! (contract-call? token-in transfer amount-in tx-sender (as-contract tx-sender) none))
+                
+                ;; Update pool reserves
+                (map-set pools pool-key (tuple
+                    (reserve-a (+ input-reserve amount-in))
+                    (reserve-b (- output-reserve calculated-output))
+                    (total-supply (get total-supply pool-info))
+                ))
+                
+                ;; Complete swap by transferring output to user
+                (try! (contract-call? token-out transfer calculated-output (as-contract tx-sender) tx-sender none))
+                
+                ;; Emit swap event
+                (var-set swap-event (some (tuple
+                    (user tx-sender)
+                    (token-in (contract-of token-in))
+                    (token-out (contract-of token-out))
+                    (amount-in amount-in)
+                    (amount-out calculated-output)
+                )))
+                
+                (ok (tuple 
+                    (amount-in amount-in) 
+                    (amount-out calculated-output)
+                ))
+            )
+        )
+    )
+)
+
+;; View Functions - Read-Only Protocol State Queries
+
+;; Query current pool reserves and liquidity information
+;; Essential for UI applications and trading bots
+(define-read-only (get-reserves
+    (token-a <sip-010-trait>)
+    (token-b <sip-010-trait>)
+)
+    (let (
+        (pool-key (get-pool-key token-a token-b))
+        (pool-data (map-get? pools pool-key))
+    )
+        (if (is-none pool-data)
+            (ok none)
+            (ok (some (unwrap-panic pool-data)))
+        )
+    )
+)

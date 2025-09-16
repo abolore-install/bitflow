@@ -8,7 +8,7 @@ requirements = []
 [contracts.bitflow]
 path = 'contracts/bitflow.clar'
 clarity_version = 3
-epoch = 'latest'
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
